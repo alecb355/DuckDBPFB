@@ -34,6 +34,18 @@ struct StringStatsData {
 	bool has_max_string_length;
 	//! The maximum string length in bytes
 	uint32_t max_string_length;
+
+	//! Whether or not it has pbf
+	bool has_pbf;
+
+	//! Each prefix level 
+	std::bitset<8> prefix1;
+	std::bitset<16> prefix2;
+	std::bitset<32> prefix3;
+	std::bitset<64> prefix4;
+
+	//! bitset size
+	constexpr static uint32_t BITSET_SIZE = 2048;
 };
 
 struct StringStats {
