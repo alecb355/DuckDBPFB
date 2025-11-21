@@ -103,21 +103,80 @@ void StringStats::SetContainsUnicode(BaseStatistics &stats) {
 }
 
 void StringStats::Serialize(const BaseStatistics &stats, Serializer &serializer) {
-	auto &string_data = StringStats::GetDataUnsafe(stats);
-	serializer.WriteProperty(200, "min", string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
-	serializer.WriteProperty(201, "max", string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
-	serializer.WriteProperty(202, "has_unicode", string_data.has_unicode);
-	serializer.WriteProperty(203, "has_max_string_length", string_data.has_max_string_length);
-	serializer.WriteProperty(204, "max_string_length", string_data.max_string_length);
+    auto &string_data = StringStats::GetDataUnsafe(stats);
+    serializer.WriteProperty(200, "min", string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
+    serializer.WriteProperty(201, "max", string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
+    serializer.WriteProperty(202, "has_unicode", string_data.has_unicode);
+    serializer.WriteProperty(203, "has_max_string_length", string_data.has_max_string_length);
+    serializer.WriteProperty(204, "max_string_length", string_data.max_string_length);
+
+    //-------------------------------------------
+    //  NEW: Prefix Bloom Filter Serialization
+    //-------------------------------------------
+
+    // Step 1: has_pbf flag
+    serializer.WriteProperty(205, "has_pbf", string_data.has_pbf);
+
+    // Step 2: if has_pbf = true，write the bitsets
+    if (string_data.has_pbf) {
+        serializer.WriteProperty(206, "pbf_1",
+            string_data.pbf_1, StringStatsData::PBF_BYTES_PER_LEVEL);
+
+        serializer.WriteProperty(207, "pbf_2",
+            string_data.pbf_2, StringStatsData::PBF_BYTES_PER_LEVEL);
+
+        serializer.WriteProperty(208, "pbf_4",
+            string_data.pbf_4, StringStatsData::PBF_BYTES_PER_LEVEL);
+
+        serializer.WriteProperty(209, "pbf_8",
+            string_data.pbf_8, StringStatsData::PBF_BYTES_PER_LEVEL);
+    }
 }
 
+
 void StringStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
-	auto &string_data = StringStats::GetDataUnsafe(base);
-	deserializer.ReadProperty(200, "min", string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
-	deserializer.ReadProperty(201, "max", string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
-	deserializer.ReadProperty(202, "has_unicode", string_data.has_unicode);
-	deserializer.ReadProperty(203, "has_max_string_length", string_data.has_max_string_length);
-	deserializer.ReadProperty(204, "max_string_length", string_data.max_string_length);
+    auto &string_data = StringStats::GetDataUnsafe(base);
+
+    // Existing fields
+    deserializer.ReadProperty(200, "min",
+        string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
+
+    deserializer.ReadProperty(201, "max",
+        string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
+
+    deserializer.ReadProperty(202, "has_unicode",
+        string_data.has_unicode);
+
+    deserializer.ReadProperty(203, "has_max_string_length",
+        string_data.has_max_string_length);
+
+    deserializer.ReadProperty(204, "max_string_length",
+        string_data.max_string_length);
+
+    //------------------------------------------------------------
+    // NEW: Prefix Bloom Filter fields
+    //------------------------------------------------------------
+
+    // Step 1: has_pbf flag
+    string_data.has_pbf = false;
+    memset(string_data.pbf_1, 0, StringStatsData::PBF_BYTES_PER_LEVEL);
+    memset(string_data.pbf_2, 0, StringStatsData::PBF_BYTES_PER_LEVEL);
+    memset(string_data.pbf_4, 0, StringStatsData::PBF_BYTES_PER_LEVEL);
+    memset(string_data.pbf_8, 0, StringStatsData::PBF_BYTES_PER_LEVEL);
+
+    // Step 2: Try to read has_pbf, and read the bitsets if has_pbf = true
+    deserializer.ReadProperty(205, "has_pbf", string_data.has_pbf);
+	
+	if (string_data.has_pbf) {
+        deserializer.ReadProperty(206, "pbf_1",
+            string_data.pbf_1, StringStatsData::PBF_BYTES_PER_LEVEL);
+        deserializer.ReadProperty(207, "pbf_2",
+            string_data.pbf_2, StringStatsData::PBF_BYTES_PER_LEVEL);
+        deserializer.ReadProperty(208, "pbf_4",
+            string_data.pbf_4, StringStatsData::PBF_BYTES_PER_LEVEL);
+        deserializer.ReadProperty(209, "pbf_8",
+            string_data.pbf_8, StringStatsData::PBF_BYTES_PER_LEVEL);
+    }
 }
 
 static int StringValueComparison(const_data_ptr_t data, idx_t len, const_data_ptr_t comparison) {
