@@ -38,14 +38,17 @@ struct StringStatsData {
 	//! Whether or not it has pbf
 	bool has_pbf;
 
-	//! Each prefix level 
-	std::bitset<8> prefix1;
-	std::bitset<16> prefix2;
-	std::bitset<32> prefix3;
-	std::bitset<64> prefix4;
-
 	//! bitset size
 	constexpr static uint32_t BITSET_SIZE = 2048;
+
+	//! Each prefix level 
+	struct PrefixBloomFilter {
+		int level;
+		std::bitset<BITSET_SIZE> bits;
+	};
+
+	constexpr static uint32_t NUM_PREFIXES = 4;
+	PrefixBloomFilter prefixes[4];
 };
 
 struct StringStats {
@@ -87,6 +90,10 @@ struct StringStats {
 	DUCKDB_API static void SetMax(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count);
+
+	static void Init_PBF(StringStatsData &string_data);
+	static bool Check_PBF(BaseStatistics &stats, const string_t &value);
+	static std::bitset<2048> GetPrefixCandidates(const string_t &value);
 
 private:
 	static StringStatsData &GetDataUnsafe(BaseStatistics &stats);
