@@ -39,12 +39,13 @@ struct StringStatsData {
 	bool has_pbf;
 
 	//! bitset size
-	constexpr static uint32_t BITSET_SIZE = 2048;
+	constexpr static uint32_t NUM_BITS = 2048;
+	constexpr static uint32_t NUM_BYTES = NUM_BITS / 8;
 
 	//! Each prefix level 
 	struct PrefixBloomFilter {
 		int level;
-		uint8_t bits[BITSET_SIZE / 8];
+		uint8_t bits[NUM_BYTES];
 	};
 
 	constexpr static uint32_t NUM_PREFIXES = 4;

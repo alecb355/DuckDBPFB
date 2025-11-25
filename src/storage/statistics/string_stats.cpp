@@ -15,6 +15,7 @@ BaseStatistics StringStats::CreateUnknown(LogicalType type) {
 	BaseStatistics result(std::move(type));
 	result.InitializeUnknown();
 	auto &string_data = StringStats::GetDataUnsafe(result);
+	StringStats::Init_PBF(string_data);
 	for (idx_t i = 0; i < StringStatsData::MAX_STRING_MINMAX_SIZE; i++) {
 		string_data.min[i] = 0;
 		string_data.max[i] = 0xFF;
@@ -29,6 +30,7 @@ BaseStatistics StringStats::CreateEmpty(LogicalType type) {
 	BaseStatistics result(std::move(type));
 	result.InitializeEmpty();
 	auto &string_data = StringStats::GetDataUnsafe(result);
+	StringStats::Init_PBF(string_data);
 	for (idx_t i = 0; i < StringStatsData::MAX_STRING_MINMAX_SIZE; i++) {
 		string_data.min[i] = 0xFF;
 		string_data.max[i] = 0;
@@ -113,6 +115,7 @@ void StringStats::Serialize(const BaseStatistics &stats, Serializer &serializer)
 
 void StringStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	auto &string_data = StringStats::GetDataUnsafe(base);
+	// StringStats::Init_PBF(string_data);
 	deserializer.ReadProperty(200, "min", string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	deserializer.ReadProperty(201, "max", string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	deserializer.ReadProperty(202, "has_unicode", string_data.has_unicode);
@@ -318,6 +321,18 @@ void StringStats::Verify(const BaseStatistics &stats, Vector &vector, const Sele
 			                        stats.ToString(), vector.ToString(count));
 		}
 		// LCOV_EXCL_STOP
+	}
+}
+
+void StringStats::Init_PBF(StringStatsData& string_data){
+	string_data.has_pbf = true;
+	int level = 1;
+	for(int i = 0; i < StringStatsData::NUM_PREFIXES; ++i){
+		string_data.prefixes[i].level = level;
+		for(int j = 0; j < StringStatsData::NUM_BYTES; ++j){
+			string_data.prefixes[i].bits[j] = 0;
+		}
+		level *= 2;
 	}
 }
 
