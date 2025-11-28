@@ -336,4 +336,47 @@ void StringStats::Init_PBF(StringStatsData& string_data){
 	}
 }
 
+// Returns a PrefixQuery whose `prefixes` field contains the 1/2/4/8-byte
+// prefixes derived from `constant` for comparison operators (=, >, <, >=, <=).
+// Other expression types return an empty PrefixQuery.
+// NOTE: BETWEEN is rewritten into two comparisons, so this function is invoked once per boundary and we compute prefixes for each side.
+PrefixQuery StringStats::GetPrefixCandidates(ExpressionType comp_type,
+                                             const std::string &constant) {
+    PrefixQuery res;
+    std::vector<std::string> prefixes;
+    const std::vector<size_t> prefix_lengths = {1, 2, 4, 8};
+
+    auto add_prefixes = [&]() {
+        for (auto len : prefix_lengths) {
+            if (len > constant.size()) break;
+            prefixes.push_back(constant.substr(0, len));
+        }
+    };
+
+    switch (comp_type) {
+	// For filters like s = 'abc' or s IS NOT DISTINCT FROM 'abc'
+    case ExpressionType::COMPARE_EQUAL:
+    case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+		std::cout << "[PBF]   case: EQUAL / NOT_DISTINCT_FROM\n";
+        add_prefixes();
+        break;
+
+	// For filters like s > or >= or < or <=
+    case ExpressionType::COMPARE_GREATERTHAN:
+    case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+    case ExpressionType::COMPARE_LESSTHAN:
+    case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+        // One side of the range bound
+		std::cout << "[PBF]   case: RANGE endpoint (>,>=,<,<=)\n";
+        add_prefixes();
+        break;
+
+    default:
+        break;
+    }
+
+    res.prefixes = std::move(prefixes);	
+	return res;
+}
+
 } // namespace duckdb
