@@ -15,11 +15,17 @@
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/array_ptr.hpp"
+#include <vector>
+#include <string>
 
 namespace duckdb {
 class BaseStatistics;
 struct SelectionVector;
 class Vector;
+
+struct PrefixQuery {
+    std::vector<std::string> prefixes;
+};
 
 struct StringStatsData {
 	constexpr static uint32_t MAX_STRING_MINMAX_SIZE = 8;
@@ -35,24 +41,20 @@ struct StringStatsData {
 	//! The maximum string length in bytes
 	uint32_t max_string_length;
 
-	//! Whether or not it has pbf
+	//! New variables for PBF
 	bool has_pbf;
 
-	//! bitset size
-	constexpr static uint32_t NUM_BITS = 2048;
-	constexpr static uint32_t NUM_BYTES = NUM_BITS / 8;
+    static constexpr idx_t PBF_BITS_PER_LEVEL  = 2048;
+    static constexpr idx_t PBF_BYTES_PER_LEVEL = PBF_BITS_PER_LEVEL / 8;
 
-	//! Each prefix level 
-	struct PrefixBloomFilter {
-		int level;
-		uint8_t bits[NUM_BYTES];
-	};
-
-	constexpr static uint32_t NUM_PREFIXES = 4;
-	PrefixBloomFilter prefixes[4];
+    data_t pbf_1[PBF_BYTES_PER_LEVEL];
+    data_t pbf_2[PBF_BYTES_PER_LEVEL];
+    data_t pbf_4[PBF_BYTES_PER_LEVEL];
+    data_t pbf_8[PBF_BYTES_PER_LEVEL];
 };
 
 struct StringStats {
+	DUCKDB_API static PrefixQuery GetPrefixCandidates(ExpressionType comp_type, const std::string &constant);
 	//! Unknown statistics - i.e. "has_unicode" is true, "max_string_length" is unknown, "min" is \0, max is \xFF
 	DUCKDB_API static BaseStatistics CreateUnknown(LogicalType type);
 	//! Empty statistics - i.e. "has_unicode" is false, "max_string_length" is 0, "min" is \xFF, max is \x00
@@ -91,10 +93,6 @@ struct StringStats {
 	DUCKDB_API static void SetMax(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count);
-
-	static void Init_PBF(StringStatsData &string_data);
-	static bool Check_PBF(BaseStatistics &stats, const string_t &value);
-	static std::bitset<2048> GetPrefixCandidates(const string_t &value);
 
 private:
 	static StringStatsData &GetDataUnsafe(BaseStatistics &stats);
