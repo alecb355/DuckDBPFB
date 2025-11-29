@@ -15,11 +15,17 @@
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/array_ptr.hpp"
+#include <vector>
+#include <string>
 
 namespace duckdb {
 class BaseStatistics;
 struct SelectionVector;
 class Vector;
+
+struct PrefixQuery {
+    std::vector<std::string> prefixes;
+};
 
 struct StringStatsData {
 	constexpr static uint32_t MAX_STRING_MINMAX_SIZE = 8;
