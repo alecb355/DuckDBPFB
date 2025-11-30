@@ -100,7 +100,7 @@ struct StringStats {
 
 	static void Init_PBF(StringStatsData &string_data);
 	static bool Check_PBF(BaseStatistics &stats, const string_t &value);
-	static std::bitset<2048> GetPrefixCandidates(const string_t &value);
+	static PrefixQuery GetPrefixCandidates(ExpressionType comp_type, const std::string &constant);
 
 private:
 	static StringStatsData &GetDataUnsafe(BaseStatistics &stats);
