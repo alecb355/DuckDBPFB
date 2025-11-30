@@ -260,6 +260,16 @@ FilterPropagateResult StringStats::CheckZonemap(const BaseStatistics &stats, Exp
 		D_ASSERT(constant_value.type() == stats.GetType());
 		D_ASSERT(!constant_value.IsNull());
 		auto &constant = StringValue::Get(constant_value);
+		std::cout<<"before prefix in zone map\n";
+		auto prefix_query = StringStats::GetPrefixCandidates(comparison_type, constant);
+		auto prefix_res = StringStats::CheckPBF(stats, prefix_query);
+
+		std::cout<<"after prefix in zone map\n";
+		if(prefix_res == FilterPropagateResult::FILTER_ALWAYS_FALSE){
+			return prefix_res;
+		}
+
+
 		auto prune_result = CheckZonemap(string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE, string_data.max,
 		                                 StringStatsData::MAX_STRING_MINMAX_SIZE, comparison_type, constant);
 		if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
