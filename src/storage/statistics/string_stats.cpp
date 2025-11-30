@@ -115,7 +115,6 @@ void StringStats::Serialize(const BaseStatistics &stats, Serializer &serializer)
 
 void StringStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	auto &string_data = StringStats::GetDataUnsafe(base);
-	// StringStats::Init_PBF(string_data);
 	deserializer.ReadProperty(200, "min", string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	deserializer.ReadProperty(201, "max", string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	deserializer.ReadProperty(202, "has_unicode", string_data.has_unicode);
@@ -151,8 +150,34 @@ void StringStats::Update(BaseStatistics &stats, const string_t &value) {
 	data_t target[StringStatsData::MAX_STRING_MINMAX_SIZE];
 	ConstructValue(data, size, target);
 
-	// update the min and max
+
 	auto &string_data = StringStats::GetDataUnsafe(stats);
+	// Prefix Bloom Filter Update Logic    
+    // 1. Ensure PBF is initialized 
+    if (!string_data.has_pbf) {
+        Init_PBF(string_data);
+    }
+	// 2. Compute and set bits for prefixes at 1, 2, 4, 8 bytes
+    const uint32_t prefix_lengths[] = {1, 2, 4, 8};
+
+    for (int i = 0; i < StringStatsData::NUM_PREFIXES; i++) {
+        uint32_t len = prefix_lengths[i];
+
+        // We can only process if the string is long enough 
+        if (size >= len) {
+            // Hash the prefix using DuckDB's standard Hash
+            hash_t hash_val = Hash(reinterpret_cast<const char*>(data), len); // cast unsigned char* and char*
+
+            // Map hash to bit index
+            uint32_t bit_index = hash_val % StringStatsData::NUM_BITS;
+            uint32_t byte_idx = bit_index / 8;
+            uint32_t bit_offset = bit_index % 8;
+
+            // Set the bit 
+            string_data.prefixes[i].bits[byte_idx] |= (1 << bit_offset);
+        }
+    }
+	// update the min and max
 	if (StringValueComparison(target, StringStatsData::MAX_STRING_MINMAX_SIZE, string_data.min) < 0) {
 		memcpy(string_data.min, target, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	}
@@ -190,6 +215,24 @@ void StringStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 	}
 	auto &string_data = StringStats::GetDataUnsafe(stats);
 	auto &other_data = StringStats::GetDataUnsafe(other);
+
+	// NEW: Prefix Bloom Filter Merge Logic
+    // If the other segment has PBF data, we must merge it 
+    if (other_data.has_pbf) {
+        // If the destination doesn't have PBF yet, initialize it now
+        if (!string_data.has_pbf) {
+            Init_PBF(string_data);
+        }
+
+        // Merge all four prefix levels (1, 2, 4, 8 bytes)
+        for (int i = 0; i < StringStatsData::NUM_PREFIXES; i++) {
+            // We iterate over the bytes of the bitset and OR them together 
+            // NUM_BITS is in bits, so we divide by 8 for bytes
+            for (int j = 0; j < StringStatsData::NUM_BITS / 8; j++) {
+                string_data.prefixes[i].bits[j] |= other_data.prefixes[i].bits[j];
+            }
+        }
+    }
 	if (StringValueComparison(other_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE, string_data.min) < 0) {
 		memcpy(string_data.min, other_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE);
 	}
@@ -204,6 +247,15 @@ void StringStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 FilterPropagateResult StringStats::CheckZonemap(const BaseStatistics &stats, ExpressionType comparison_type,
                                                 array_ptr<const Value> constants) {
 	auto &string_data = StringStats::GetDataUnsafe(stats);
+
+	// Step 1: try prefix-based pruning (ONLY for prefix-friendly predicates)
+	std::cout << "[PBF] Enter CheckZonemap\n";
+	for (auto &constant_value : constants) {
+		auto &constant = StringValue::Get(constant_value);
+		StringStats::GetPrefixCandidates(comparison_type, constant);
+	}
+
+	// Step 2: fallback to existing min/max
 	for (auto &constant_value : constants) {
 		D_ASSERT(constant_value.type() == stats.GetType());
 		D_ASSERT(!constant_value.IsNull());
@@ -295,11 +347,13 @@ void StringStats::Verify(const BaseStatistics &stats, Vector &vector, const Sele
 		auto data = value.GetData();
 		auto len = value.GetSize();
 		// LCOV_EXCL_START
+		// 1. max string length check
 		if (string_data.has_max_string_length && len > string_data.max_string_length) {
 			throw InternalException(
 			    "Statistics mismatch: string value exceeds maximum string length.\nStatistics: %s\nVector: %s",
 			    stats.ToString(), vector.ToString(count));
 		}
+		// 2. unicode check
 		if (stats.GetType().id() == LogicalTypeId::VARCHAR && !string_data.has_unicode) {
 			auto unicode = Utf8Proc::Analyze(data, len);
 			if (unicode == UnicodeType::UTF8) {
@@ -310,6 +364,7 @@ void StringStats::Verify(const BaseStatistics &stats, Vector &vector, const Sele
 				throw InternalException("Invalid unicode detected in vector: %s", vector.ToString(count));
 			}
 		}
+		// 3. min/max zonemap check
 		if (StringValueComparison(const_data_ptr_cast(data),
 		                          MinValue<idx_t>(len, StringStatsData::MAX_STRING_MINMAX_SIZE), string_data.min) < 0) {
 			throw InternalException("Statistics mismatch: value is smaller than min.\nStatistics: %s\nVector: %s",
@@ -319,6 +374,28 @@ void StringStats::Verify(const BaseStatistics &stats, Vector &vector, const Sele
 		                          MinValue<idx_t>(len, StringStatsData::MAX_STRING_MINMAX_SIZE), string_data.max) > 0) {
 			throw InternalException("Statistics mismatch: value is bigger than max.\nStatistics: %s\nVector: %s",
 			                        stats.ToString(), vector.ToString(count));
+		}
+
+		// 4) Prefix Bloom Filter check
+		if (string_data.has_pbf) {
+			for (int p = 0; p < StringStatsData::NUM_PREFIXES; p++) {
+				uint32_t prefix_len = string_data.prefixes[p].level;
+				if (prefix_len == 0 || len < prefix_len) {
+					continue;
+				}
+
+				hash_t hash_val = Hash(reinterpret_cast<const char *>(data), prefix_len);
+				uint32_t bit_index = hash_val % StringStatsData::NUM_BITS;
+				uint32_t byte_idx = bit_index / 8;
+				uint32_t bit_offset = bit_index % 8;
+
+				uint8_t byte = string_data.prefixes[p].bits[byte_idx];
+				if (((byte >> bit_offset) & 1) == 0) {
+					throw InternalException(
+					    "Statistics mismatch: prefix bloom filter bit not set for value.\nStatistics: %s\nVector: %s",
+					    stats.ToString(), vector.ToString(count));
+				}
+			}
 		}
 		// LCOV_EXCL_STOP
 	}
