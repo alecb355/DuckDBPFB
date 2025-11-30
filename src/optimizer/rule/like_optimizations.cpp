@@ -7,7 +7,6 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
-#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 
 namespace duckdb {
 
@@ -20,36 +19,6 @@ LikeOptimizationRule::LikeOptimizationRule(ExpressionRewriter &rewriter) : Rule(
 	// we match on LIKE ("~~") and NOT LIKE ("!~~")
 	func->function = make_uniq<ManyFunctionMatcher>(unordered_set<string> {"!~~", "~~"});
 	root = std::move(func);
-}
-
-// Compute the smallest lexicographic string that is strictly greater than `prefix`
-// and still represents the next range upper-bound for a "prefix range".
-// Returns true if such an upper bound exists and writes it into `upper`.
-// Returns false if no finite upper bound exists (all bytes are 0xFF).
-//
-// Example:
-//   prefix = "az"
-//   => upper becomes "b"   (since "az" < s < "b" covers all strings starting with "az")
-//
-//   prefix = "abc"
-//   => upper becomes "abd" (smallest string > "abc" in byte-lexicographic order)
-static bool NextPrefix(const string &prefix, string &upper) {
-	// Start from the input prefix
-    upper = prefix;
-    // Walk from the last byte backwards and try to increment one byte
-    for (idx_t i = upper.size(); i > 0; i--) {
-        unsigned char c = static_cast<unsigned char>(upper[i - 1]);
-        if (c != 0xFF) {
-            // This byte can still be incremented: use it as the "carry" position
-            c++;
-            upper[i - 1] = static_cast<char>(c);
-            // Truncate everything after this position to get the minimal upper bound
-            upper.resize(i);
-            return true;
-        }
-    }
-    // All bytes were 0xFF: there is no finite upper bound in this byte space
-    return false;
 }
 
 static bool PatternIsConstant(const string &pattern) {
@@ -153,58 +122,13 @@ unique_ptr<Expression> LikeOptimizationRule::Apply(LogicalOperator &op, vector<r
 
 	bool is_not_like = root.function.name == "!~~";
 	if (PatternIsConstant(patt_str)) {
-	// col LIKE 'abc'  →  col = 'abc'
-	return make_uniq<BoundComparisonExpression>(
-	    is_not_like ? ExpressionType::COMPARE_NOTEQUAL : ExpressionType::COMPARE_EQUAL,
-	    std::move(root.children[0]), std::move(root.children[1]));
+		// Pattern is constant
+		return make_uniq<BoundComparisonExpression>(is_not_like ? ExpressionType::COMPARE_NOTEQUAL
+		                                                        : ExpressionType::COMPARE_EQUAL,
+		                                            std::move(root.children[0]), std::move(root.children[1]));
 	} else if (PatternIsPrefix(patt_str)) {
-		// Pattern is a prefix LIKE: e.g. 'abc%', 'az%%'
-		// Goal: rewrite "col LIKE 'prefix%'" into a range:
-		//          col >= prefix AND col < upper
-		// where "upper" is the smallest string > prefix that no longer has the prefix.
-		string prefix = patt_str;
-		prefix.erase(std::remove(prefix.begin(), prefix.end(), '%'), prefix.end());
-
-		string upper;
-		bool has_upper = NextPrefix(prefix, upper);
-
-		auto col_expr = std::move(root.children[0]);
-
-		// col >= prefix
-		auto ge = make_uniq<BoundComparisonExpression>(
-			ExpressionType::COMPARE_GREATERTHANOREQUALTO,
-			col_expr->Copy(),
-			make_uniq<BoundConstantExpression>(Value(prefix)));
-
-		// range_expr will become either:
-		//   - (col >= prefix) AND (col < upper), if we have a finite `upper`
-		//   - just (col >= prefix), if `upper` does not exist
-		unique_ptr<Expression> range_expr;
-		if (has_upper) {
-			// col < upper
-			auto lt = make_uniq<BoundComparisonExpression>(
-				ExpressionType::COMPARE_LESSTHAN,
-				std::move(col_expr),
-				make_uniq<BoundConstantExpression>(Value(upper)));
-
-			auto and_expr =
-				make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
-			and_expr->children.push_back(std::move(ge));
-			and_expr->children.push_back(std::move(lt));
-			range_expr = std::move(and_expr);
-		} else {
-			range_expr = std::move(ge);
-		}
-		
-		// For NOT LIKE, wrap the range in a NOT:
-		//   NOT (col >= prefix AND col < upper)
-		if (is_not_like) {
-			auto negation = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_NOT, LogicalType::BOOLEAN);
-			negation->children.push_back(std::move(range_expr));
-			return negation;
-		} else {
-			return range_expr;
-		}
+		// Prefix LIKE pattern : [^%_]*[%]+, ignoring underscore
+		return ApplyRule(root, PrefixFun::GetFunction(), patt_str, is_not_like);
 	} else if (PatternIsSuffix(patt_str)) {
 		// Suffix LIKE pattern: [%]+[^%_]*, ignoring underscore
 		return ApplyRule(root, SuffixFun::GetFunction(), patt_str, is_not_like);
