@@ -15,11 +15,17 @@
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/array_ptr.hpp"
+#include <vector>
+#include <string>
 
 namespace duckdb {
 class BaseStatistics;
 struct SelectionVector;
 class Vector;
+
+struct PrefixQuery {
+    std::vector<std::string> prefixes;
+};
 
 struct StringStatsData {
 	constexpr static uint32_t MAX_STRING_MINMAX_SIZE = 8;
@@ -34,6 +40,22 @@ struct StringStatsData {
 	bool has_max_string_length;
 	//! The maximum string length in bytes
 	uint32_t max_string_length;
+
+	//! Whether or not it has pbf
+	bool has_pbf;
+
+	//! bitset size
+	constexpr static uint32_t NUM_BITS = 2048;
+	constexpr static uint32_t NUM_BYTES = NUM_BITS / 8;
+
+	//! Each prefix level 
+	struct PrefixBloomFilter {
+		int level;
+		uint8_t bits[NUM_BYTES];
+	};
+
+	constexpr static uint32_t NUM_PREFIXES = 4;
+	PrefixBloomFilter prefixes[4];
 };
 
 struct StringStats {
@@ -75,6 +97,10 @@ struct StringStats {
 	DUCKDB_API static void SetMax(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count);
+
+	static void Init_PBF(StringStatsData &string_data);
+	static bool Check_PBF(BaseStatistics &stats, const string_t &value);
+	static PrefixQuery GetPrefixCandidates(ExpressionType comp_type, const std::string &constant);
 
 private:
 	static StringStatsData &GetDataUnsafe(BaseStatistics &stats);
