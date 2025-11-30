@@ -311,6 +311,37 @@ FilterPropagateResult StringStats::CheckZonemap(const_data_ptr_t min_data, idx_t
 	}
 }
 
+FilterPropagateResult StringStats::CheckPBF(const BaseStatistics &stats, const PrefixQuery &query) {
+        auto &string_data = StringStats::GetDataUnsafe(stats);
+        if (!string_data.has_pbf || query.prefixes.empty()) {
+                return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+        }
+
+        for (auto &candidate : query.prefixes) {
+                auto data = const_data_ptr_cast(candidate.c_str());
+                auto size = candidate.size();
+                if (size == 0) {
+                        // empty prefix matches everything
+                        return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+                }
+                for (idx_t i = 0; i < StringStatsData::NUM_PREFIXES; i++) {
+                        auto prefix_length = static_cast<uint32_t>(string_data.prefixes[i].level);
+                        if (size < prefix_length) {
+                                continue;
+                        }
+
+                        auto hash_val = Hash(reinterpret_cast<const char *>(data), prefix_length);
+                        auto bit_index = hash_val % StringStatsData::NUM_BITS;
+                        auto byte_idx = bit_index / 8;
+                        auto bit_mask = static_cast<uint8_t>(1 << (bit_index % 8));
+                        if (string_data.prefixes[i].bits[byte_idx] & bit_mask) {
+                                return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+                        }
+                }
+        }
+        return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+}
+
 static uint32_t GetValidMinMaxSubstring(const_data_ptr_t data) {
 	for (uint32_t i = 0; i < StringStatsData::MAX_STRING_MINMAX_SIZE; i++) {
 		if (data[i] == '\0') {
