@@ -97,9 +97,9 @@ struct StringStats {
 	DUCKDB_API static void SetMax(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);
 	DUCKDB_API static void Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count);
+	DUCKDB_API static FilterPropagateResult CheckPBF(const BaseStatistics &stats, const PrefixQuery &query);
 
 	static void Init_PBF(StringStatsData &string_data);
-	static bool Check_PBF(BaseStatistics &stats, const string_t &value);
 	static PrefixQuery GetPrefixCandidates(ExpressionType comp_type, const std::string &constant);
 
 private:

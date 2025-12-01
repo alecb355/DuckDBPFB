@@ -104,6 +104,7 @@ public:
 	virtual vector<MetadataBlockInfo> GetMetadataInfo() = 0;
 	virtual shared_ptr<TableIOManager> GetTableIOManager(BoundCreateTableInfo *info) = 0;
 	virtual BlockManager &GetBlockManager() = 0;
+	virtual void Destroy();
 
 	void SetStorageVersion(idx_t version) {
 		storage_version = version;
@@ -155,7 +156,8 @@ protected:
 	bool load_complete = false;
 	//! The serialization compatibility version when reading and writing from this database
 	optional_idx storage_version;
-	//! Estimated size of changes for determining automatic checkpointing on in-memory databases
+	//! Estimated size of changes for determining automatic checkpointing on in-memory databases and databases without a
+	//! WAL.
 	atomic<idx_t> in_memory_change_size;
 	//! Storage options passed in through configuration
 	StorageOptions storage_options;
@@ -193,6 +195,7 @@ public:
 	vector<MetadataBlockInfo> GetMetadataInfo() override;
 	shared_ptr<TableIOManager> GetTableIOManager(BoundCreateTableInfo *info) override;
 	BlockManager &GetBlockManager() override;
+	void Destroy() override;
 
 protected:
 	void LoadDatabase(QueryContext context) override;

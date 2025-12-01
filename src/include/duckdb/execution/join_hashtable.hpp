@@ -277,6 +277,10 @@ public:
 	uint64_t bitmask = DConstants::INVALID_INDEX;
 	//! Whether or not we error on multiple rows found per match in a SINGLE join
 	bool single_join_error_on_multiple_rows = true;
+	//! Whether or not to perform deduplication based on join_keys when building ht
+	bool insert_duplicate_keys = true;
+	//! Number of probe matches
+	atomic<idx_t> total_probe_matches {0};
 
 	struct {
 		mutex mj_lock;
