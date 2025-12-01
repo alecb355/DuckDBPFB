@@ -479,16 +479,6 @@ PrefixQuery StringStats::GetPrefixCandidates(ExpressionType comp_type,
         add_prefixes();
         break;
 
-	// For filters like s > or >= or < or <=
-    case ExpressionType::COMPARE_GREATERTHAN:
-    case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-    case ExpressionType::COMPARE_LESSTHAN:
-    case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-        // One side of the range bound
-		std::cout << "[PBF]   case: RANGE endpoint (>,>=,<,<=)\n";
-        add_prefixes();
-        break;
-
     default:
         break;
     }
