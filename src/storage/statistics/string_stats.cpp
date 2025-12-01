@@ -244,32 +244,98 @@ void StringStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 	string_data.max_string_length = MaxValue<uint32_t>(string_data.max_string_length, other_data.max_string_length);
 }
 
-FilterPropagateResult StringStats::CheckZonemap(const BaseStatistics &stats, ExpressionType comparison_type,
+FilterPropagateResult StringStats::CheckZonemap(const BaseStatistics &stats,
+                                                ExpressionType comparison_type,
                                                 array_ptr<const Value> constants) {
 	auto &string_data = StringStats::GetDataUnsafe(stats);
 
-	// Step 1: try prefix-based pruning (ONLY for prefix-friendly predicates)
 	std::cout << "[PBF] Enter CheckZonemap\n";
-	for (auto &constant_value : constants) {
-		auto &constant = StringValue::Get(constant_value);
-		StringStats::GetPrefixCandidates(comparison_type, constant);
-	}
 
-	// Step 2: fallback to existing min/max
+	// 1) First run PBF for all constants
+	bool any_pbf_used = false;        // at least one constant actually went through PBF
+	bool any_pbf_no_pruning = false;  // at least one constant returned NO_PRUNING_POSSIBLE from PBF
+
+	// These constants are "not rejected by PBF" and will be passed to the min/max zonemap
+	std::vector<const Value *> survivors;
+
 	for (auto &constant_value : constants) {
 		D_ASSERT(constant_value.type() == stats.GetType());
 		D_ASSERT(!constant_value.IsNull());
 		auto &constant = StringValue::Get(constant_value);
-		auto prune_result = CheckZonemap(string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE, string_data.max,
-		                                 StringStatsData::MAX_STRING_MINMAX_SIZE, comparison_type, constant);
-		if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
-			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
-		} else if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
-			return FilterPropagateResult::FILTER_ALWAYS_TRUE;
+
+		std::cout << "[PBF]   constant = \"" << constant << "\"\n";
+
+		auto prefix_query = StringStats::GetPrefixCandidates(comparison_type, constant);
+		std::cout << "[PBF]   GetPrefixCandidates returned "
+		          << prefix_query.prefixes.size() << " prefix(es)\n";
+
+		// No usable prefix: PBF is effectively a no-op, so we go straight to min/max
+		if (prefix_query.prefixes.empty()) {
+			any_pbf_no_pruning = true;
+			survivors.push_back(&constant_value);
+			std::cout << "[PBF]   no usable prefixes -> fall back to min/max zonemap\n";
+			continue;
+		}
+
+		any_pbf_used = true;
+		auto prefix_res = StringStats::CheckPBF(stats, prefix_query);
+
+		std::cout << "[PBF]   CheckPBF result = "
+		          << (prefix_res == FilterPropagateResult::FILTER_ALWAYS_FALSE
+		              ? "FILTER_ALWAYS_FALSE"
+		              : "NO_PRUNING_POSSIBLE")
+		          << "\n";
+
+		if (prefix_res == FilterPropagateResult::FILTER_ALWAYS_FALSE) {
+			// This constant is ruled out by PBF: this segment cannot match this constant
+			std::cout << "[PBF]   this constant ruled out by PBF -> skip min/max for it\n";
+			// Do not add to survivors
+			continue;
+		} else {
+			// PBF cannot prune this constant -> forward it to min/max
+			any_pbf_no_pruning = true;
+			std::cout << "[PBF]   PBF says NO_PRUNING_POSSIBLE -> keep for min/max\n";
+			survivors.push_back(&constant_value);
 		}
 	}
+
+	// If at least one constant used PBF and all those constants were rejected by PBF,
+	// then this segment can never satisfy the predicate and can be fully pruned.
+	if (any_pbf_used && !any_pbf_no_pruning) {
+		std::cout << "[PBF]   all prefix-eligible constants ruled out by PBF -> "
+		          << "FILTER_ALWAYS_FALSE for this segment\n";
+		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+	}
+
+	// 2) Run the original min/max zonemap logic only on constants that PBF did not reject
+	for (auto *val_ptr : survivors) {
+		const auto &constant_value = *val_ptr;
+		auto &constant = StringValue::Get(constant_value);
+
+		std::cout << "[ZONEMAP]   running min/max for constant = \"" << constant << "\"\n";
+
+		auto prune_result = CheckZonemap(string_data.min, StringStatsData::MAX_STRING_MINMAX_SIZE,
+		                                 string_data.max, StringStatsData::MAX_STRING_MINMAX_SIZE,
+		                                 comparison_type, constant);
+
+		if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
+			std::cout << "[ZONEMAP]   min/max: NO_PRUNING_POSSIBLE\n";
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		} else if (prune_result == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
+			std::cout << "[ZONEMAP]   min/max: FILTER_ALWAYS_TRUE\n";
+			return FilterPropagateResult::FILTER_ALWAYS_TRUE;
+		} else {
+			std::cout << "[ZONEMAP]   min/max: FILTER_ALWAYS_FALSE for this constant\n";
+		}
+	}
+
+	// If we reach this point:
+	//   - either all constants were rejected by PBF, or
+	//   - PBF was effectively a no-op and all surviving constants were rejected by min/max
+	std::cout << "[ZONEMAP]   final: FILTER_ALWAYS_FALSE\n";
 	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 }
+
 
 FilterPropagateResult StringStats::CheckZonemap(const_data_ptr_t min_data, idx_t min_len, const_data_ptr_t max_data,
                                                 idx_t max_len, ExpressionType comparison_type, const string &constant) {
@@ -309,6 +375,80 @@ FilterPropagateResult StringStats::CheckZonemap(const_data_ptr_t min_data, idx_t
 	default:
 		throw InternalException("Expression type not implemented for string statistics zone map");
 	}
+}
+
+FilterPropagateResult StringStats::CheckPBF(const BaseStatistics &stats, const PrefixQuery &query) {
+	auto &string_data = StringStats::GetDataUnsafe(stats);
+	std::cout << "[PBF] CheckPBF called: has_pbf=" << (string_data.has_pbf ? 1 : 0)
+	          << ", num_prefixes=" << query.prefixes.size() << std::endl;
+
+	if (!string_data.has_pbf || query.prefixes.empty()) {
+		std::cout << "[PBF]   no PBF or empty prefix list -> NO_PRUNING_POSSIBLE\n";
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+
+	std::cout << "[PBF]   prefixes: ";
+	for (auto &c : query.prefixes) {
+		std::cout << "\"" << c << "\" ";
+	}
+	std::cout << std::endl;
+
+	// Pick the "strongest" candidate: the prefix with the longest length
+	const std::string *best_candidate = &query.prefixes[0];
+	for (auto &c : query.prefixes) {
+		if (c.size() > best_candidate->size()) {
+			best_candidate = &c;
+		}
+	}
+
+	std::cout << "[PBF]   using strongest prefix: \"" << *best_candidate << "\"\n";
+
+	auto data = const_data_ptr_cast(best_candidate->c_str());
+	auto size = best_candidate->size();
+	if (size == 0) {
+		// Empty prefix cannot be used for pruning
+		std::cout << "[PBF]   strongest prefix is empty -> NO_PRUNING_POSSIBLE\n";
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+
+	bool any_level_checked = false;
+
+	for (idx_t i = 0; i < StringStatsData::NUM_PREFIXES; i++) {
+		auto prefix_length = static_cast<uint32_t>(string_data.prefixes[i].level);
+
+		// Only check the level whose prefix length matches the candidate length
+		if (prefix_length == 0 || prefix_length != size) {
+			continue;
+		}
+		any_level_checked = true;
+
+		auto hash_val = Hash(reinterpret_cast<const char *>(data), prefix_length);
+		auto bit_index = hash_val % StringStatsData::NUM_BITS;
+		auto byte_idx = bit_index / 8;
+		auto bit_mask = static_cast<uint8_t>(1 << (bit_index % 8));
+
+		std::cout << "[PBF]   level=" << prefix_length
+		          << " bit_index=" << bit_index
+		          << " byte_idx=" << byte_idx
+		          << " bit_mask=" << (int)bit_mask << std::endl;
+
+		if (string_data.prefixes[i].bits[byte_idx] & bit_mask) {
+			// This segment may contain strings with this prefix -> cannot prune
+			std::cout << "[PBF]   bit is set -> NO_PRUNING_POSSIBLE\n";
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		} else {
+			std::cout << "[PBF]   bit is NOT set at this level\n";
+		}
+	}
+
+	if (!any_level_checked) {
+		std::cout << "[PBF]   no matching prefix length level -> NO_PRUNING_POSSIBLE\n";
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+
+	// None of the levels for this prefix length have the bit set -> safe to prune this segment
+	std::cout << "[PBF]   no bits set for this prefix -> FILTER_ALWAYS_FALSE\n";
+	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 }
 
 static uint32_t GetValidMinMaxSubstring(const_data_ptr_t data) {
@@ -435,16 +575,6 @@ PrefixQuery StringStats::GetPrefixCandidates(ExpressionType comp_type,
     case ExpressionType::COMPARE_EQUAL:
     case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 		std::cout << "[PBF]   case: EQUAL / NOT_DISTINCT_FROM\n";
-        add_prefixes();
-        break;
-
-	// For filters like s > or >= or < or <=
-    case ExpressionType::COMPARE_GREATERTHAN:
-    case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-    case ExpressionType::COMPARE_LESSTHAN:
-    case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-        // One side of the range bound
-		std::cout << "[PBF]   case: RANGE endpoint (>,>=,<,<=)\n";
         add_prefixes();
         break;
 
